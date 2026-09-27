@@ -1,0 +1,46 @@
+{
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    },
+    "ruff.lineLength": 159,
+  },
+  "material-icon-theme.folders.associations": {
+    "agents": "cline",
+    "agent": "cline",
+    "txt": "Docs",
+    "corpus": "Json",
+    "experiments": "Molecule",
+    "evaluations": "Pipe",
+    "evaluator": "tasks"
+  },
+  "errorLens.gutterIconsEnabled": true,
+  "errorLens.gutterIconSet": "emoji",
+  "errorLens.border": [
+    "1px dashed",
+    "1px dotted",
+    "1px dashed",
+    "1px solid #00000040",
+  ],
+  "errorLens.borderRadius": "0.4em",
+  "errorLens.messageTemplate": "$severity $message",
+  "errorLens.severityText": [
+    "❌",
+    "⚠",
+    "ℹ",
+    "📗",
+  ],
+  "errorLens.problemRangeDecorationEnabled": true,
+  "errorLens.padding": "2px 1ch",
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  "python-envs.pythonProjects": [],
+}
