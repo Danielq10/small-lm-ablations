@@ -11,7 +11,7 @@ model:
   block_size: 256
 
 train:
-  batch_size: 64
+  batch_size: 32
   learning_rate: 3e-4
   training_steps: 5000
 

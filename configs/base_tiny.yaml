@@ -1,0 +1,20 @@
+experiment: arch-ablation
+run_name: baseline-fast
+description: "Baseline smaller model with character tokenizer, on 10M tokens"
+seed: 1337
+
+model:
+  n_embed: 256
+  n_blocks: 4
+  n_heads: 4
+  dropout: 0.2
+  block_size: 128
+
+train:
+  batch_size: 64
+  learning_rate: 3e-4
+  training_steps: 5000
+
+eval:
+  eval_iters: 200
+  eval_interval: 500
