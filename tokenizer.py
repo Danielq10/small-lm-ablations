@@ -1,13 +1,18 @@
+import os
+
+
 class CharacterTokenizer:
     def __init__(self):
-        DATA_PATH = "data/input.txt"
+        DATA_PATH = "data/"
         # Read dataset
-        with open(DATA_PATH, "r", encoding="utf-8") as f:
-            text = f.read()
+        self.text = ""
+        for filename in os.listdir(DATA_PATH):
+            with open(os.path.join(DATA_PATH, filename), "r", encoding="utf-8") as f:
+                text = f.read()
+                self.text += text
 
-        self.tokens = sorted(list(set(text)))
+        self.tokens = sorted(list(set(self.text)))
         self.vocab_size = len(self.tokens)
-        self.text = text
 
         # Build encoder and decoder (tokenization)
         self.character_to_integer_map = {char: i for i, char in enumerate(self.tokens)}
