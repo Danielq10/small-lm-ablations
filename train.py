@@ -1,6 +1,6 @@
+import argparse
 import logging
 import os
-import sys
 
 import mlflow
 import torch
@@ -48,8 +48,18 @@ def estimate_loss(train_data, valid_data, config):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train a language model")
+    parser.add_argument("--config", type=str, help="Config name without .yaml")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        help="Path to checkpoint  .pt to resume training from",
+        default=None,
+    )
+    args = parser.parse_args()
+
     # Read training configuration
-    config_path = os.path.join("configs", f"{sys.argv[1]}.yaml")
+    config_path = os.path.join("configs", f"{args.config}.yaml")
     cfg = load_config(config_path)
     # Read dataset
 
@@ -75,12 +85,30 @@ if __name__ == "__main__":
     )
     model = model.to(device)
 
-    num_params = sum(p.numel() for p in model.parameters())
-    print(num_params / 1e6, "M parameters")
-
     # Initialize optimizer and start training loop
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.learning_rate)
+
+    # Check if we are resuming from checkpoint
+    if args.resume:
+        print(f"Resuming training from checkpoint: {args.resume} ...")
+
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+
+        # 1. Restore weights
+        model.load_state_dict(ckpt["model_state"])
+
+        # 2. Restore optimizer momentum buffers
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+
+        # Retrieve iteration count
+        start_step = ckpt.get("step", 0)
+        print(f"Resumed from step {start_step}")
+
+    num_params = sum(p.numel() for p in model.parameters())
+    print(num_params / 1e6, "M parameters")
+
+    #
 
     mlflow.set_tracking_uri("sqlite:///runs/mlflow.db")
 
@@ -126,7 +154,28 @@ if __name__ == "__main__":
             {"train_loss": losses["train"], "val_loss": losses["valid"]},
             step=cfg.train.training_steps,
         )
-    # Create predictions
+
+        # 1. local checkpoint
+        os.makedirs("runs/checkpoints", exist_ok=True)
+        ckpt_path = f"runs/checkpoints/{cfg.run_name}.pt"
+
+        torch.save(
+            {
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "config": cfg.model_dump(),
+                "step": cfg.train.training_steps,
+                "vocab": tokenizer.tokens,  # needed to rebuild CharacterTokenizer
+            },
+            ckpt_path,
+        )
+
+        # 2. also track in MLflow - cloudpickle avoids pt2 tracing
+        # (forward returns a tuple, generate() samples - bad fit for tracing)
+        model.eval()
+        mlflow.pytorch.log_model(model, name="model", serialization_format="pickle")
+        mlflow.log_artifact(ckpt_path)
+        # Create predictions
 
     idx = torch.zeros((1, 1), dtype=torch.long, device=device)
     predicted_tokens = model.generate(idx, max_new_tokens=600)[0].tolist()
