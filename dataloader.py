@@ -6,10 +6,10 @@ from tokenizer import CharacterTokenizer
 
 
 class DataLoader:
-    def __init__(self):
+    def __init__(self, num_books):
         self.books = list(
             json.load(open("data/book_urls.json", "r", encoding="utf-8"))
-        )[:100]
+        )[:num_books]
         self.data_path = "data/"
 
     def get_size(self):
