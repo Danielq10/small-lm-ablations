@@ -1,4 +1,6 @@
-data/
+data/*.bin
+data/*.txt
+data/polish_dynaword_clean/
 __pycache__/
 .venv/
 archive/
