@@ -3,11 +3,12 @@ import logging
 import os
 
 import mlflow
+import numpy as np
 import torch
 
 from config import load_config
 from model import LanguageModel
-from tokenizer import CharacterTokenizer  # , WordTokenizer
+from tokenizer import BPETokenizer  # , WordTokenizer
 
 torch.manual_seed(1337)
 
@@ -22,8 +23,20 @@ def get_batch(split, train_data, valid_data, config):
 
     data = train_data if split == "train" else valid_data
     ix = torch.randint(len(data) - config.model.block_size, (config.train.batch_size,))
-    x = torch.stack([data[i : i + config.model.block_size] for i in ix])
-    y = torch.stack([data[i + 1 : i + config.model.block_size + 1] for i in ix])
+    x = torch.stack(
+        [
+            torch.from_numpy((data[i : i + config.model.block_size]).astype(np.int64))
+            for i in ix
+        ]
+    )
+    y = torch.stack(
+        [
+            torch.from_numpy(
+                (data[i + 1 : i + 1 + config.model.block_size]).astype(np.int64)
+            )
+            for i in ix
+        ]
+    )
     x = x.to(device)
     y = y.to(device)
 
@@ -63,15 +76,11 @@ if __name__ == "__main__":
     cfg = load_config(config_path)
     # Read dataset
 
-    tokenizer = CharacterTokenizer()
-    # tokenizer = WordTokenizer()
-    # Train - validation split
+    tokenizer = BPETokenizer("data/polish_bpe_8k.json")
 
-    data = torch.tensor(tokenizer.encode(tokenizer.text), dtype=torch.long)
-    n = int(0.9 * len(data))
-
-    train_data = data[:n]
-    valid_data = data[n:]
+    # Load memory-mapped binary datasets
+    train_data = np.memmap("data/train.bin", dtype=np.uint16, mode="r")
+    valid_data = np.memmap("data/val.bin", dtype=np.uint16, mode="r")
 
     # build model
 
@@ -110,10 +119,14 @@ if __name__ == "__main__":
 
     #
 
-    mlflow.set_tracking_uri("sqlite:///runs/mlflow.db")
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///runs/mlflow.db")
+    mlflow.set_tracking_uri(tracking_uri)
 
     if mlflow.get_experiment_by_name(cfg.experiment) is None:
-        mlflow.create_experiment(cfg.experiment, artifact_location="runs/artifacts")
+        if tracking_uri.startswith("sqlite"):
+            mlflow.create_experiment(cfg.experiment, artifact_location="runs/artifacts")
+        else:
+            mlflow.create_experiment(cfg.experiment)
     mlflow.set_experiment(cfg.experiment)
 
     # Enable system metrics logging
@@ -165,7 +178,7 @@ if __name__ == "__main__":
                 "optimizer_state": optimizer.state_dict(),
                 "config": cfg.model_dump(),
                 "step": cfg.train.training_steps,
-                "vocab": tokenizer.tokens,  # needed to rebuild CharacterTokenizer
+                "vocab_size": tokenizer.vocab_size,
             },
             ckpt_path,
         )
