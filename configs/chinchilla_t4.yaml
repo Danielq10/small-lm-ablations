@@ -1,0 +1,20 @@
+experiment: arch-ablation
+run_name: chinchilla-t4-baseline
+description: "Compute-optimal ~9M baseline model (~4.7M backbone, 8k BPE) on 92M Polish tokens"
+seed: 1337
+
+model:
+  n_embed: 256
+  n_blocks: 6
+  n_heads: 4
+  dropout: 0.1
+  block_size: 512
+
+train:
+  batch_size: 128
+  learning_rate: 7e-4
+  training_steps: 3000
+
+eval:
+  eval_iters: 100
+  eval_interval: 250
