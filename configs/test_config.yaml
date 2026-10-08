@@ -1,0 +1,20 @@
+experiment: arch-ablation
+run_name: test-training
+description: "Minimal configuration to test training loop"
+seed: 1337
+
+model:
+  n_embed: 256
+  n_blocks: 2
+  n_heads: 2
+  dropout: 0.2
+  block_size: 128
+
+train:
+  batch_size: 128
+  learning_rate: 3e-4
+  training_steps: 1000
+
+eval:
+  eval_iters: 100
+  eval_interval: 250
