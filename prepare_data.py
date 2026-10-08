@@ -1,66 +1,44 @@
 from pathlib import Path
 
 import numpy as np
-from datasets import DatasetDict, load_dataset, load_from_disk
-from tokenizers import Tokenizer
+from datasets import Dataset, load_from_disk
+from tokenizers import Tokenizer, decoders
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.trainers import BpeTrainer
 
-# We don't want to use entire datase, so we will select a few shards of the Polish Dynaword dataset.
-DATA_FILES = [
-    "data/wolne_lektury/wolne_lektury.parquet",
-    "data/1000_novels/1000_novels.parquet",
-    "data/wikibooks/wikibooks.parquet",
-]
+from dataloader import DataLoader
 
-OUTPUT_DIR = Path("data/polish_dynaword_clean")
+OUTPUT_DIR = Path("data/wolne_lektury")
 
 
 def main():
-    print("Loading parquet shards...")
-    ds = load_dataset("SlayerLab/polish-dynaword", data_files=DATA_FILES, split="train")
+    print("Downloading books from Wolne Lektury ...")
+    loader = DataLoader()
+    loader.create_corpus()
 
+    ds = Dataset.from_dict({"text": loader.corpus})
     # 1. Deterministic 95/5 split at the document level
     split = ds.train_test_split(test_size=0.05, seed=42, shuffle=True)
     train_ds = split["train"]
-    val_ds = split["test"]
-
-    # 2. Sum existing token counts
-    train_tokens = sum(train_ds["token_count"])
-    val_tokens = sum(val_ds["token_count"])
-    total_tokens = train_tokens + val_tokens
-
-    print("-- Dataset Token Budget ---")
-    print(f"Train docs:      {len(train_ds):>10,d} | Est. tokens: {train_tokens:>12,d}")
-    print(f"Val docs:        {len(val_ds):>10,d} | Est. tokens: {val_tokens:>12,d}")
-    print(f"Total:           {len(ds):>10,d} | Est. tokens: {total_tokens:>12,d}\n")
-
-    # 3. Strip metadata, keep only 'text'
-    columns_to_remove = [col for col in ds.column_names if col != "text"]
-    clean_split = DatasetDict(
-        {
-            "train": train_ds.remove_columns(columns_to_remove),
-            "validation": val_ds.remove_columns(columns_to_remove),
-        }
-    )
 
     # 4. Save clean Arrow tables to disk
     OUTPUT_DIR.parent.mkdir(parents=True, exist_ok=True)
-    clean_split.save_to_disk(str(OUTPUT_DIR))
+    split.save_to_disk(str(OUTPUT_DIR))
     print(f"Saved text-only Arrow dataset to {OUTPUT_DIR.resolve()}")
 
     # 5. Export train text to flat file for training the tokenizer
     raw_txt_path = Path("data/train_for_tokenizer.txt")
     print(f"Exporting raw text for BPE training to {raw_txt_path}...")
     with open(raw_txt_path, "w", encoding="utf-8") as f:
-        for doc in clean_split["train"]:
+        for doc in train_ds:
             f.write(doc["text"] + "\n\n")
     print("Done.")
 
     # 6. Initialize Byte-Level BPE (handles arbitrary UTF-8 / Polish diacritics cleanly)
     tokenizer = Tokenizer(BPE(unk_token="<unk>"))
     tokenizer.pre_tokenizer = ByteLevel()
+    tokenizer.decoder = decoders.ByteLevel()
 
     # 7. Keep vocab compact so embedding parameters don't dominate the model
     trainer = BpeTrainer(
@@ -73,14 +51,14 @@ def main():
     tokenizer.train(files=["data/train_for_tokenizer.txt"], trainer=trainer)
     tokenizer.save("data/polish_bpe_8k.json")
 
-    dataset = load_from_disk("data/polish_dynaword_clean")
+    dataset = load_from_disk(OUTPUT_DIR)
 
     eos_id = tokenizer.token_to_id("</s>")
 
     # pretokenize data
     for split, filename in [
         ("train", "data/train.bin"),
-        ("validation", "data/val.bin"),
+        ("test", "data/val.bin"),
     ]:
         print(f"Tokenizing {split}...")
         texts = dataset[split]["text"]
