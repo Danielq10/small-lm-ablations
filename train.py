@@ -9,6 +9,7 @@ import torch
 from config import load_config
 from model import LanguageModel
 from tokenizer import BPETokenizer  # , WordTokenizer
+from utils import calculate_training_steps, count_model_params
 
 torch.manual_seed(1337)
 
@@ -114,10 +115,37 @@ if __name__ == "__main__":
         start_step = ckpt.get("step", 0)
         print(f"Resumed from step {start_step}")
 
-    num_params = sum(p.numel() for p in model.parameters())
-    print(num_params / 1e6, "M parameters")
+    embedding_params, model_params = count_model_params(
+        seq_len=cfg.model.block_size,
+        vocab_size=tokenizer.vocab_size,
+        d_model=cfg.model.n_embed,
+        num_layers=cfg.model.n_blocks,
+    )
 
-    #
+    print("MODEL SUMMARY")
+    print("-----------------")
+    print(f"Embedding parameters: {embedding_params / 1e6:.2f} M")
+    print(f"Model parameters: {model_params / 1e6:.2f} M")
+    print(f"Total parameters: {(embedding_params + model_params) / 1e6:.2f} M")
+    print("-----------------\n")
+
+    calculated_training_steps = calculate_training_steps(
+        num_tokens=len(train_data),
+        batch_size=cfg.train.batch_size,
+        block_size=cfg.model.block_size,
+        epochs=1,
+    )
+
+    calculated_eval_interval = max(1, calculated_training_steps // 20)
+
+    print("TRAINING CONFIGURATION")
+    print("-----------------")
+    print(f"Train tokens: {len(train_data) / 1e6:.2f} M")
+    print(f"Validation tokens: {len(valid_data) / 1e6:.2f} M")
+    print(f"Batch size: {cfg.train.batch_size}")
+    print(f"Training steps: {calculated_training_steps}")
+    print(f"Eval interval: {calculated_eval_interval}")
+    print("-----------------\n")
 
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///runs/mlflow.db")
     mlflow.set_tracking_uri(tracking_uri)
@@ -138,10 +166,16 @@ if __name__ == "__main__":
             params=cfg.model.model_dump()
             | cfg.train.model_dump()
             | cfg.eval.model_dump()
-            | {"total_params": num_params}
+            | {"total_params": (embedding_params + model_params)}
+            | {
+                "embedding_params": embedding_params,
+                "model_params": model_params,
+                "calulated_training_steps": calculated_training_steps,
+                "calculated_eval_interval": calculated_eval_interval,
+            }
         )
-        for iter in range(cfg.train.training_steps):
-            if iter % cfg.eval.eval_interval == 0:
+        for iter in range(calculated_training_steps):
+            if iter % calculated_eval_interval == 0:
                 losses = estimate_loss(train_data, valid_data, cfg)
                 print(
                     f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['valid']:.4f}"
@@ -165,7 +199,7 @@ if __name__ == "__main__":
         final_losses = estimate_loss(train_data, valid_data, cfg)
         mlflow.log_metrics(
             {"train_loss": losses["train"], "val_loss": losses["valid"]},
-            step=cfg.train.training_steps,
+            step=calculated_training_steps,
         )
 
         # 1. local checkpoint
