@@ -115,7 +115,7 @@ if __name__ == "__main__":
         start_step = ckpt.get("step", 0)
         print(f"Resumed from step {start_step}")
 
-    embedding_params, model_params = count_model_params(
+    model_params, embedding_params = count_model_params(
         seq_len=cfg.model.block_size,
         vocab_size=tokenizer.vocab_size,
         d_model=cfg.model.n_embed,
@@ -128,6 +128,8 @@ if __name__ == "__main__":
     print(f"Model parameters: {model_params / 1e6:.2f} M")
     print(f"Total parameters: {(embedding_params + model_params) / 1e6:.2f} M")
     print("-----------------\n")
+
+    # @TODO: calculate tokens to parameters ratio
 
     calculated_training_steps = calculate_training_steps(
         num_tokens=len(train_data),
