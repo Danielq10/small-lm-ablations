@@ -7,14 +7,14 @@ model:
   n_embed: 256
   n_blocks: 6
   n_heads: 4
-  dropout: 0.1
-  block_size: 512
+  dropout: 0.2
+  block_size: 1024
 
 train:
-  batch_size: 128
-  learning_rate: 7e-4
-  training_steps: 3000
+  batch_size: 64
+  learning_rate: 5e-4
+  training_steps: 6000
 
 eval:
   eval_iters: 100
-  eval_interval: 250
+  eval_interval: 500
