@@ -4,11 +4,12 @@ description: "Baseline model with character tokenizer"
 seed: 1337
 
 model:
-  n_embed: 384
+  n_embed: 512
   n_blocks: 6
-  n_heads: 6
+  n_heads: 8
   dropout: 0.2
   block_size: 256
+  pos_encoding: "learned"
 
 train:
   batch_size: 32
