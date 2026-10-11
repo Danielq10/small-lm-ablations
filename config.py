@@ -8,6 +8,7 @@ class ModelConfig(BaseModel):
     n_heads: int = 6
     dropout: float = Field(0.2, ge=0, lt=1, description="Dropout rate")
     block_size: int = 256
+    pos_encoding: str = "learned"
 
 
 class TrainingConfig(BaseModel):
