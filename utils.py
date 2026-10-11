@@ -24,3 +24,31 @@ def calculate_training_steps(num_tokens, batch_size, block_size, epochs=1):
     tokens_per_step = batch_size * block_size
     total_steps = (num_tokens * epochs) // tokens_per_step
     return total_steps
+
+
+def approx_loss(N, D):
+    """
+    Approximates loss given N parameters and D dataset size (in tokens),
+    per Chinchilla paper.
+    """
+    E = 1.69  # entropy of natural language, limit of infinite model on infinite data
+    A = 406.4
+    B = 410.7
+    alpha = 0.34
+    beta = 0.28
+    return A / (N**alpha) + B / (D**beta) + E
+
+
+def calculate_optimal_parameters(budget_hours):
+    peak = 65e12  # T4 fp16 tensor peak
+
+    mfu = 0.25  # assumption: measure this
+    C = peak * mfu * budget_hours * 3600
+
+    # Chinchilla-optimal: C = 6*N*D with D = 20*N  ->  C = 120*N^2
+    N = (C / 120) ** 0.5
+    D = 20 * N
+
+    loss = approx_loss(N, D)
+
+    return N, D, loss

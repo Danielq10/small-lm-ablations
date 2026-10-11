@@ -9,7 +9,11 @@ import torch
 from config import load_config
 from model import LanguageModel
 from tokenizer import BPETokenizer  # , WordTokenizer
-from utils import calculate_training_steps, count_model_params
+from utils import (
+    calculate_optimal_parameters,
+    calculate_training_steps,
+    count_model_params,
+)
 
 torch.manual_seed(1337)
 
@@ -127,9 +131,8 @@ if __name__ == "__main__":
     print(f"Embedding parameters: {embedding_params / 1e6:.2f} M")
     print(f"Model parameters: {model_params / 1e6:.2f} M")
     print(f"Total parameters: {(embedding_params + model_params) / 1e6:.2f} M")
+    print(f"Token to parameters ratio: {len(train_data) / model_params:.2f}")
     print("-----------------\n")
-
-    # @TODO: calculate tokens to parameters ratio
 
     calculated_training_steps = calculate_training_steps(
         num_tokens=len(train_data),
@@ -148,6 +151,18 @@ if __name__ == "__main__":
     print(f"Training steps: {calculated_training_steps}")
     print(f"Eval interval: {calculated_eval_interval}")
     print("-----------------\n")
+
+    optimal_params, optimal_tokens, expected_loss = calculate_optimal_parameters(
+        budget_hours=1
+    )
+
+    print("Chinchilla Caluclations")
+    print("--------------------------------")
+    print("FLOPs budget: T4 for 2 hours")
+    print(f"Optimal Model Parameters: {optimal_params / 1e6:.2f} M")
+    print(f"Optimal Training Tokens: {optimal_tokens / 1e6:.2f} M")
+    print(f"Approximate loss: {expected_loss:.2f}")
+    print("-------------------------------\n")
 
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///runs/mlflow.db")
     mlflow.set_tracking_uri(tracking_uri)
