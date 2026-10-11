@@ -10,7 +10,7 @@ from config import load_config
 from model import LanguageModel
 from tokenizer import BPETokenizer  # , WordTokenizer
 from utils import (
-    calculate_optimal_parameters,
+    calculate_budget_and_model_size,
     calculate_training_steps,
     count_model_params,
 )
@@ -74,6 +74,12 @@ if __name__ == "__main__":
         help="Path to checkpoint  .pt to resume training from",
         default=None,
     )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run test training on a subset of data",
+        default=False,
+    )
     args = parser.parse_args()
 
     # Read training configuration
@@ -83,9 +89,19 @@ if __name__ == "__main__":
 
     tokenizer = BPETokenizer("data/polish_bpe_8k.json")
 
-    # Load memory-mapped binary datasets
-    train_data = np.memmap("data/train.bin", dtype=np.uint16, mode="r")
-    valid_data = np.memmap("data/val.bin", dtype=np.uint16, mode="r")
+    if not args.test:
+        # Load memory-mapped binary datasets
+        train_data = np.memmap("data/train.bin", dtype=np.uint16, mode="r")
+        valid_data = np.memmap("data/val.bin", dtype=np.uint16, mode="r")
+
+    else:
+        # Jsut load validation data (11M tokens) and split it
+
+        data = np.memmap("data/val.bin", dtype=np.uint16, mode="r")
+        split_idx = int(len(data) * 0.95)
+
+        train_data = data[:split_idx]
+        valid_data = data[split_idx:]
 
     # build model
 
@@ -96,6 +112,7 @@ if __name__ == "__main__":
         n_blocks=cfg.model.n_blocks,
         n_heads=cfg.model.n_heads,
         dropout=cfg.model.dropout,
+        pos_encoding=cfg.model.pos_encoding,
     )
     model = model.to(device)
 
@@ -128,11 +145,17 @@ if __name__ == "__main__":
 
     print("MODEL SUMMARY")
     print("-----------------")
+    print(f"Vocab size: {tokenizer.vocab_size}")
+    print(f"n_embed: {cfg.model.n_embed}")
+    print(f"block_size: {cfg.model.block_size}")
+    print(f"n_blocks: {cfg.model.n_blocks}")
+    print(f"n_heads: {cfg.model.n_heads}")
+    print(f"dropout: {cfg.model.dropout}")
+    print(f"pos_encoding: {cfg.model.pos_encoding}")
     print(f"Embedding parameters: {embedding_params / 1e6:.2f} M")
     print(f"Model parameters: {model_params / 1e6:.2f} M")
     print(f"Total parameters: {(embedding_params + model_params) / 1e6:.2f} M")
-    print(f"Token to parameters ratio: {len(train_data) / model_params:.2f}")
-    print("-----------------\n")
+    print(f"Token to parameters ratio: {len(train_data) / model_params:.2f}\n\n")
 
     calculated_training_steps = calculate_training_steps(
         num_tokens=len(train_data),
@@ -149,20 +172,15 @@ if __name__ == "__main__":
     print(f"Validation tokens: {len(valid_data) / 1e6:.2f} M")
     print(f"Batch size: {cfg.train.batch_size}")
     print(f"Training steps: {calculated_training_steps}")
-    print(f"Eval interval: {calculated_eval_interval}")
-    print("-----------------\n")
+    print(f"Eval interval: {calculated_eval_interval}\n\n")
 
-    optimal_params, optimal_tokens, expected_loss = calculate_optimal_parameters(
-        budget_hours=1
+    hours, optimal_params, expected_loss = calculate_budget_and_model_size(
+        len(train_data)
     )
 
-    print("Chinchilla Caluclations")
-    print("--------------------------------")
-    print("FLOPs budget: T4 for 2 hours")
-    print(f"Optimal Model Parameters: {optimal_params / 1e6:.2f} M")
-    print(f"Optimal Training Tokens: {optimal_tokens / 1e6:.2f} M")
-    print(f"Approximate loss: {expected_loss:.2f}")
-    print("-------------------------------\n")
+    print(f"Optimal parameters: {optimal_params / 1e6:.2f} M")
+    print(f"Expected Training time: {hours:.2f} hours")
+    print(f"Expected loss: {expected_loss:.2f}")
 
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///runs/mlflow.db")
     mlflow.set_tracking_uri(tracking_uri)
@@ -189,6 +207,8 @@ if __name__ == "__main__":
                 "model_params": model_params,
                 "calulated_training_steps": calculated_training_steps,
                 "calculated_eval_interval": calculated_eval_interval,
+                "expected_loss": expected_loss,
+                "expected_training_hours": hours,
             }
         )
         for iter in range(calculated_training_steps):
