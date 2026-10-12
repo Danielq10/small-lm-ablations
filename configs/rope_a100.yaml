@@ -1,0 +1,21 @@
+experiment: arch-ablation
+run_name: rope-a100
+description: "Baseline model with RoPE trained on A100 GPU"
+seed: 1337
+
+model:
+  n_embed: 512
+  n_blocks: 6
+  n_heads: 8
+  dropout: 0.2
+  block_size: 256
+  pos_encoding: "rope"
+
+train:
+  batch_size: 128
+  learning_rate: 6e-4
+  training_steps: 5000
+
+eval:
+  eval_iters: 200
+  eval_interval: 1000
