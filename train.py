@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from config import load_config
+from display import TrainingDisplay
 from model import LanguageModel
 from tokenizer import BPETokenizer  # , WordTokenizer
 from utils import (
@@ -49,18 +50,22 @@ def get_batch(split, train_data, valid_data, config):
 
 
 @torch.no_grad()
-def estimate_loss(train_data, valid_data, config):
+def estimate_loss(train_data, valid_data, config, display):
     out = {}
     model.eval()
+
     for split in ["train", "valid"]:
         losses = torch.zeros(config.eval.eval_iters)
+        display.eval_start(split)
         for k in range(config.eval.eval_iters):
             X, Y = get_batch(split, train_data, valid_data, config)
             logits, loss = model(X, Y)
             losses[k] = loss.item()
+            display.eval_tick()
 
         out[split] = losses.mean()
 
+    display.eval_end()
     model.train()
     return out
 
@@ -143,20 +148,6 @@ if __name__ == "__main__":
         num_layers=cfg.model.n_blocks,
     )
 
-    print("MODEL SUMMARY")
-    print("-----------------")
-    print(f"Vocab size: {tokenizer.vocab_size}")
-    print(f"n_embed: {cfg.model.n_embed}")
-    print(f"block_size: {cfg.model.block_size}")
-    print(f"n_blocks: {cfg.model.n_blocks}")
-    print(f"n_heads: {cfg.model.n_heads}")
-    print(f"dropout: {cfg.model.dropout}")
-    print(f"pos_encoding: {cfg.model.pos_encoding}")
-    print(f"Embedding parameters: {embedding_params / 1e6:.2f} M")
-    print(f"Model parameters: {model_params / 1e6:.2f} M")
-    print(f"Total parameters: {(embedding_params + model_params) / 1e6:.2f} M")
-    print(f"Token to parameters ratio: {len(train_data) / model_params:.2f}\n\n")
-
     calculated_training_steps = calculate_training_steps(
         num_tokens=len(train_data),
         batch_size=cfg.train.batch_size,
@@ -166,21 +157,24 @@ if __name__ == "__main__":
 
     calculated_eval_interval = max(1, calculated_training_steps // 20)
 
-    print("TRAINING CONFIGURATION")
-    print("-----------------")
-    print(f"Train tokens: {len(train_data) / 1e6:.2f} M")
-    print(f"Validation tokens: {len(valid_data) / 1e6:.2f} M")
-    print(f"Batch size: {cfg.train.batch_size}")
-    print(f"Training steps: {calculated_training_steps}")
-    print(f"Eval interval: {calculated_eval_interval}\n\n")
-
     hours, optimal_params, expected_loss = calculate_budget_and_model_size(
         len(train_data)
     )
 
-    print(f"Optimal parameters: {optimal_params / 1e6:.2f} M")
-    print(f"Expected Training time: {hours:.2f} hours")
-    print(f"Expected loss: {expected_loss:.2f}")
+    display = TrainingDisplay(
+        cfg=cfg,
+        vocab_size=tokenizer.vocab_size,
+        embedding_params=embedding_params,
+        model_params=model_params,
+        training_tokens=len(train_data),
+        validation_tokens=len(valid_data),
+        training_steps=calculated_training_steps,
+        expected_training_time=hours,
+        optimal_model_params=optimal_params,
+        expected_loss=expected_loss,
+    )
+
+    display.print_header()
 
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///runs/mlflow.db")
     mlflow.set_tracking_uri(tracking_uri)
@@ -211,13 +205,16 @@ if __name__ == "__main__":
                 "expected_training_hours": hours,
             }
         )
+
+        display.start_training()
+
         for iter in range(calculated_training_steps):
             if iter % calculated_eval_interval == 0:
-                losses = estimate_loss(train_data, valid_data, cfg)
-                print(
-                    f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['valid']:.4f}"
-                )
+                losses = estimate_loss(train_data, valid_data, cfg, display)
 
+                display.log_eval(
+                    step=iter, train_loss=losses["train"], val_loss=losses["valid"]
+                )
                 mlflow.log_metrics(
                     {"train_loss": losses["train"], "val_loss": losses["valid"]},
                     step=iter,
@@ -233,15 +230,25 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
 
-        final_losses = estimate_loss(train_data, valid_data, cfg)
+            display.log_step(loss=loss.item())
+
+        final_losses = estimate_loss(train_data, valid_data, cfg, display)
         mlflow.log_metrics(
             {"train_loss": losses["train"], "val_loss": losses["valid"]},
             step=calculated_training_steps,
         )
 
+        display.finish_training()
+
         # 1. local checkpoint
         os.makedirs("runs/checkpoints", exist_ok=True)
         ckpt_path = f"runs/checkpoints/{cfg.run_name}.pt"
+
+        display.print_summary(
+            final_train_loss=final_losses["train"],
+            final_validation_loss=final_losses["valid"],
+            ckpt_path=ckpt_path,
+        )
 
         torch.save(
             {
