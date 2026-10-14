@@ -234,7 +234,7 @@ if __name__ == "__main__":
 
         final_losses = estimate_loss(train_data, valid_data, cfg, display)
         mlflow.log_metrics(
-            {"train_loss": losses["train"], "val_loss": losses["valid"]},
+            {"train_loss": final_losses["train"], "val_loss": final_losses["valid"]},
             step=calculated_training_steps,
         )
 
