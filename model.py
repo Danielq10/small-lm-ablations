@@ -118,6 +118,102 @@ class SelfAttentionHeadRope(nn.Module):
         return out
 
 
+class GroupedQueryAttentionHead(nn.Module):
+    def __init__(self, head_size, n_embed, key, value, block_size, dropout=0.2):
+        super().__init__()
+        self.key = key
+        self.value = value
+        self.query = nn.Linear(n_embed, head_size, bias=False)
+        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, T, C = x.shape
+
+        k = self.key(x)  # (B, T, 16)
+        q = self.query(x)  # (B, T, 16)
+
+        # compute attention scores ("affinities")
+        wei = (
+            q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5
+        )  # (B, T, 16) @ (B, 16, T) ---> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))  # (B, T, T)
+        wei = F.softmax(wei, dim=-1)  # (B, T, T)
+        wei = self.dropout(wei)
+
+        # perform weighted aggregation of the values
+        v = self.value(x)  # (B, T, C)
+        out = wei @ v
+        return out
+
+
+class GroupedQueryAttention(nn.Module):
+    def __init__(
+        self,
+        num_heads,
+        head_size,
+        n_embed,
+        block_size,
+        num_groups,
+        dropout=0.2,
+        pos_encoding=None,
+    ):
+        super().__init__()
+        assert num_heads % num_groups == 0, (
+            "num_heads must be divisible by num_kv_groups"
+        )
+
+        self.keys = nn.ModuleList(
+            [nn.Linear(n_embed, head_size, bias=False) for _ in range(num_groups)]
+        )
+        self.values = nn.ModuleList(
+            [nn.Linear(n_embed, head_size, bias=False) for _ in range(num_groups)]
+        )
+
+        heads_per_group = num_heads // num_groups
+
+        if pos_encoding == "learned":
+            self.heads = nn.ModuleList(
+                [
+                    GroupedQueryAttentionHead(
+                        head_size=head_size,
+                        n_embed=n_embed,
+                        key=self.keys[head // heads_per_group],
+                        value=self.values[head // heads_per_group],
+                        block_size=block_size,
+                        dropout=dropout,
+                    )
+                    for head in range(num_heads)
+                ]
+            )
+
+        # TODO: Implement rope GQA later
+        # elif pos_encoding == "rope":
+        #     self.heads = nn.ModuleList(
+        #         [
+        #             SelfAttentionHeadRope(
+        #                 head_size=head_size,
+        #                 n_embed=n_embed,
+        #                 block_size=block_size,
+        #                 dropout=dropout,
+        #             )
+        #             for head in range(num_heads)
+        #         ]
+        #     )
+        else:
+            raise ValueError(
+                f"pos_encoding {pos_encoding} not supported, please choose one of ['learned', 'rope']"
+            )
+        self.projection = nn.Linear(n_embed, n_embed)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        out = torch.cat([head(x) for head in self.heads], dim=-1)
+        out = self.projection(out)
+        out = self.dropout(out)
+        return out
+
+
 class MultiHeadAttention(nn.Module):
     """Multiple heads of self-attention in parallel"""
 
@@ -183,17 +279,34 @@ class FeedForwardNetwork(nn.Module):
 class DecoderBlock(nn.Module):
     """Transformers decoder block"""
 
-    def __init__(self, n_embed, n_heads, block_size, dropout, pos_encoding):
+    def __init__(self, n_embed, n_heads, block_size, dropout, pos_encoding, attention):
         super().__init__()
         head_size = n_embed // n_heads
-        self.heads = MultiHeadAttention(
-            num_heads=n_heads,
-            head_size=head_size,
-            n_embed=n_embed,
-            block_size=block_size,
-            dropout=dropout,
-            pos_encoding=pos_encoding,
-        )
+        if attention == "mha":
+            self.heads = MultiHeadAttention(
+                num_heads=n_heads,
+                head_size=head_size,
+                n_embed=n_embed,
+                block_size=block_size,
+                dropout=dropout,
+                pos_encoding=pos_encoding,
+            )
+        elif attention == "gqa":
+            self.heads = GroupedQueryAttention(
+                num_heads=n_heads,
+                head_size=head_size,
+                n_embed=n_embed,
+                block_size=block_size,
+                num_groups=4,
+                dropout=dropout,
+                pos_encoding=pos_encoding,
+            )
+
+        else:
+            raise ValueError(
+                f"attention {attention} not supported, please choose one of ['mha', 'gqa']"
+            )
+
         self.mlp = FeedForwardNetwork(n_embed=n_embed, dropout=dropout)
         self.ln1 = nn.LayerNorm(n_embed)
         self.ln2 = nn.LayerNorm(n_embed)
@@ -214,6 +327,7 @@ class LanguageModel(nn.Module):
         n_heads=8,
         dropout=0.2,
         pos_encoding="learned",
+        attention="mha",
     ):
         super().__init__()
 
@@ -233,6 +347,7 @@ class LanguageModel(nn.Module):
                     block_size=block_size,
                     dropout=dropout,
                     pos_encoding=pos_encoding,
+                    attention=attention,
                 )
                 for n in range(n_blocks)
             ]
@@ -269,6 +384,7 @@ class LanguageModel(nn.Module):
 
         return logits, loss
 
+    @torch.no_grad()
     def generate(self, idx, max_new_tokens):
         # idx is (B, T) array of indixes in the current context
         for _ in range(max_new_tokens):
