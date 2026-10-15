@@ -1,24 +1,30 @@
 import argparse
 import logging
 import os
+import warnings
 
 import mlflow
+import mlflow.pytorch
 import numpy as np
 import torch
 
 from config import load_config
+from dataloaderlite import DataLoaderLite
 from display import TrainingDisplay
 from model import LanguageModel
 from tokenizer import BPETokenizer  # , WordTokenizer
 from utils import (
-    calculate_budget_and_model_size,
     calculate_training_steps,
+    chinchilla_plan,
     count_model_params,
+    detect_gpu,
 )
 
 torch.manual_seed(1337)
 
-logging.getLogger("mlflow.system_metrics.metrics.gpu_monitor").setLevel(logging.ERROR)
+# logging.getLogger("mlflow.system_metrics.metrics.gpu_monitor").setLevel(logging.ERROR)
+logging.getLogger("mlflow").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", module="mlflow")
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -49,25 +55,58 @@ def get_batch(split, train_data, valid_data, config):
     return x, y
 
 
+# @torch.no_grad()
+# def estimate_loss(train_data, valid_data, config, display):
+#     out = {}
+#     model.eval()
+
+#     for split in ["train", "valid"]:
+#         losses = torch.zeros(config.eval.eval_iters)
+#         display.eval_start(split)
+#         for k in range(config.eval.eval_iters):
+#             X, Y = get_batch(split, train_data, valid_data, config)
+#             logits, loss = model(X, Y)
+#             losses[k] = loss.item()
+#             display.eval_tick()
+
+#         out[split] = losses.mean()
+
+#     display.eval_end()
+#     model.train()
+#     return out
+
+
 @torch.no_grad()
-def estimate_loss(train_data, valid_data, config, display):
-    out = {}
+def estimate_loss(model, train_data, valid_data, split, config, display):
     model.eval()
 
-    for split in ["train", "valid"]:
-        losses = torch.zeros(config.eval.eval_iters)
-        display.eval_start(split)
-        for k in range(config.eval.eval_iters):
-            X, Y = get_batch(split, train_data, valid_data, config)
-            logits, loss = model(X, Y)
-            losses[k] = loss.item()
-            display.eval_tick()
+    losses = torch.zeros(config.eval.eval_iters)
 
-        out[split] = losses.mean()
+    display.eval_start(f"{split} loss")
+    for k in range(config.eval.eval_iters):
+        X, Y = get_batch(split, train_data, valid_data, config)
+        _, loss = model(X, Y)
+        losses[k] = loss.item()
+        display.eval_tick()
 
     display.eval_end()
     model.train()
-    return out
+    return losses.mean()
+
+
+@torch.no_grad()
+def evaluate_full_validation(model, val_loader, device):
+    model.eval()
+    val_loader.current_position = 0
+    total_batches = len(val_loader.data) // val_loader.tokens_per_batch
+
+    losses = []
+    for _ in range(total_batches):
+        X, Y = val_loader.next_batch(device=device)
+        _, loss = model(X, Y)
+        losses.append(loss.item())
+
+    return sum(losses) / len(losses) if losses else 0.0
 
 
 if __name__ == "__main__":
@@ -110,6 +149,16 @@ if __name__ == "__main__":
 
     # build model
 
+    train_loader = DataLoaderLite(
+        data=train_data,
+        batch_size=cfg.train.batch_size,
+        block_size=cfg.model.block_size,
+    )
+    valid_loader = DataLoaderLite(
+        data=valid_data,
+        batch_size=cfg.train.batch_size,
+        block_size=cfg.model.block_size,
+    )
     model = LanguageModel(
         vocab_size=tokenizer.vocab_size,
         n_embed=cfg.model.n_embed,
@@ -141,12 +190,11 @@ if __name__ == "__main__":
         start_step = ckpt.get("step", 0)
         print(f"Resumed from step {start_step}")
 
-    model_params, embedding_params = count_model_params(
-        seq_len=cfg.model.block_size,
-        vocab_size=tokenizer.vocab_size,
-        d_model=cfg.model.n_embed,
-        num_layers=cfg.model.n_blocks,
-    )
+    params = count_model_params(model)
+    gpu = detect_gpu()
+    plan = chinchilla_plan(params["total"], len(train_data), gpu["peak_flops"])
+    hours = plan["hours"]
+    expected_loss = plan["loss"]
 
     calculated_training_steps = calculate_training_steps(
         num_tokens=len(train_data),
@@ -157,21 +205,15 @@ if __name__ == "__main__":
 
     calculated_eval_interval = max(1, calculated_training_steps // 20)
 
-    hours, optimal_params, expected_loss = calculate_budget_and_model_size(
-        len(train_data)
-    )
-
     display = TrainingDisplay(
         cfg=cfg,
         vocab_size=tokenizer.vocab_size,
-        embedding_params=embedding_params,
-        model_params=model_params,
+        params=params,
+        plan=plan,
+        gpu=gpu,
         training_tokens=len(train_data),
         validation_tokens=len(valid_data),
         training_steps=calculated_training_steps,
-        expected_training_time=hours,
-        optimal_model_params=optimal_params,
-        expected_loss=expected_loss,
     )
 
     display.print_header()
@@ -191,18 +233,22 @@ if __name__ == "__main__":
     mlflow.set_system_metrics_sampling_interval(10)
 
     with mlflow.start_run(run_name=cfg.run_name, description=cfg.description) as run:
+        logging.getLogger("mlflow").setLevel(logging.ERROR)
         mlflow.log_params(
             params=cfg.model.model_dump()
             | cfg.train.model_dump()
             | cfg.eval.model_dump()
-            | {"total_params": (embedding_params + model_params)}
+            | {"total_params": params["total"]}
             | {
-                "embedding_params": embedding_params,
-                "model_params": model_params,
+                "embedding_params": params["embedding"],
+                "non_embedding_params": params["non_embedding"],
+                "head_params": params["head"],
                 "calulated_training_steps": calculated_training_steps,
                 "calculated_eval_interval": calculated_eval_interval,
                 "expected_loss": expected_loss,
-                "expected_training_hours": hours,
+                "expected_training_hours": hours if hours is not None else -1,
+                "gpu_name": gpu["name"],
+                "gpu_dtype": gpu["dtype"],
             }
         )
 
@@ -210,18 +256,32 @@ if __name__ == "__main__":
 
         for iter in range(calculated_training_steps):
             if iter % calculated_eval_interval == 0:
-                losses = estimate_loss(train_data, valid_data, cfg, display)
+                # losses = estimate_loss(train_data, valid_data, cfg, display)
 
-                display.log_eval(
-                    step=iter, train_loss=losses["train"], val_loss=losses["valid"]
+                # display.log_eval(
+                #     step=iter, train_loss=losses["train"], val_loss=losses["valid"]
+                # )
+                # mlflow.log_metrics(
+                #     {"train_loss": losses["train"], "val_loss": losses["valid"]},
+                #     step=iter,
+                # )
+
+                train_loss = estimate_loss(
+                    model, train_data, valid_data, "train", cfg, display
                 )
+                val_loss = estimate_loss(
+                    model, train_data, valid_data, "validation", cfg, display
+                )
+
+                display.log_eval(step=iter, train_loss=train_loss, val_loss=val_loss)
                 mlflow.log_metrics(
-                    {"train_loss": losses["train"], "val_loss": losses["valid"]},
+                    {"train_loss": train_loss, "val_loss": val_loss},
                     step=iter,
                 )
 
             # sample a batch of data
-            xb, yb = get_batch("train", train_data, valid_data, cfg)
+            # xb, yb = get_batch("train", train_data, valid_data, cfg)
+            xb, yb = train_loader.next_batch(device=device)
 
             # evaluate the loss
             logits, loss = model(xb, yb)
@@ -232,9 +292,13 @@ if __name__ == "__main__":
 
             display.log_step(loss=loss.item())
 
-        final_losses = estimate_loss(train_data, valid_data, cfg, display)
+        # final_losses = estimate_loss(train_data, valid_data, cfg, display)
+        train_loss = estimate_loss(model, train_data, valid_data, "train", cfg, display)
+        full_valid_loss = evaluate_full_validation(
+            model=model, val_loader=valid_loader, device=device
+        )
         mlflow.log_metrics(
-            {"train_loss": final_losses["train"], "val_loss": final_losses["valid"]},
+            {"train_loss": train_loss, "val_loss": full_valid_loss},
             step=calculated_training_steps,
         )
 
@@ -245,8 +309,8 @@ if __name__ == "__main__":
         ckpt_path = f"runs/checkpoints/{cfg.run_name}.pt"
 
         display.print_summary(
-            final_train_loss=final_losses["train"],
-            final_validation_loss=final_losses["valid"],
+            final_train_loss=train_loss,
+            final_validation_loss=full_valid_loss,
             ckpt_path=ckpt_path,
         )
 
@@ -261,14 +325,13 @@ if __name__ == "__main__":
             ckpt_path,
         )
 
+        # Create predictions
+        model.eval()
+        idx = torch.zeros((1, 1), dtype=torch.long, device=device)
+        predicted_tokens = model.generate(idx, max_new_tokens=600)[0].tolist()
+        display.print_generation(tokenizer.decode(predicted_tokens))
+
         # 2. also track in MLflow - cloudpickle avoids pt2 tracing
         # (forward returns a tuple, generate() samples - bad fit for tracing)
-        model.eval()
         mlflow.pytorch.log_model(model, name="model", serialization_format="pickle")
         mlflow.log_artifact(ckpt_path)
-        # Create predictions
-
-    idx = torch.zeros((1, 1), dtype=torch.long, device=device)
-    predicted_tokens = model.generate(idx, max_new_tokens=600)[0].tolist()
-
-    print(tokenizer.decode(predicted_tokens))
