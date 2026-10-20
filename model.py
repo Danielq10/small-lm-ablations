@@ -5,6 +5,38 @@ from torch.nn import functional as F
 torch.manual_seed(1337)
 
 
+def precompute_angles(
+    sequence_length,
+    head_size,
+):
+    freqs = torch.arange(
+        0, sequence_length
+    ).float()  # Initialize freqs table with i (0, 1, 2, ..., T-1)
+
+    channel_index = torch.arange(start=0, end=head_size, step=2).float()
+
+    # For each i,, theta_i = 10000 ** (-2i/d_model)
+    thetas = 1.0 / (10000 ** (channel_index / head_size))
+
+    # Now, create a matrix of rotation angles for every token posisition [0, T-1] and every channel pair [0, C/2 - 1]
+    angles = torch.outer(freqs, thetas)  # (T, C/2)
+    return angles
+
+
+def rotate_vector(vector, cos_theta, sin_theta):
+    T = vector.shape[-2]
+
+    x0 = vector[..., 0::2]
+    x1 = vector[..., 1::2]
+
+    # 2. Swap and negate: (x0, x1) -> (-x1, x0)
+    vector_rotated = torch.stack((-x1, x0), dim=-1).flatten(-2)
+
+    result = (vector * cos_theta[:T]) + (vector_rotated * sin_theta[:T])
+
+    return result
+
+
 def apply_rotary_pos_emb(vector):
     # Rotates the vector q or k
 
@@ -59,20 +91,28 @@ def apply_rotary_pos_emb(vector):
 
 
 class AttentionHead(nn.Module):
-    def __init__(self, head_size, n_embed, block_size, pos_encoding, dropout=0.2):
+    def __init__(
+        self,
+        head_size,
+        n_embed,
+        block_size,
+        pos_encoding,
+        dropout=0.2,
+    ):
         super().__init__()
         self.pos_encoding = pos_encoding
         self.query = nn.Linear(n_embed, head_size, bias=False)
+        # TODO: tril can also be registered once in the GQA
         self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, k, v):
+    def forward(self, x, k, v, cos_theta, sin_theta):
         B, T, C = x.shape
 
         q = self.query(x)  # (B, T, 16)
 
         if self.pos_encoding == "rope":
-            q = apply_rotary_pos_emb(q)
+            q = rotate_vector(q, cos_theta, sin_theta)
 
         # compute attention scores ("affinities")
         wei = (
@@ -83,7 +123,6 @@ class AttentionHead(nn.Module):
         wei = self.dropout(wei)
 
         # perform weighted aggregation of the values
-        # v = self.value(x)  # (B, T, C)
         out = wei @ v
         return out
 
@@ -119,13 +158,22 @@ class GroupedQueryAttention(nn.Module):
         self.num_groups = num_groups
         self.pos_encoding = pos_encoding
 
+        if pos_encoding == "rope":
+            assert head_size % 2 == 0, "head_size must be even for RoPE"
+            angles = precompute_angles(block_size, head_size)
+            self.register_buffer(
+                "cos_theta", torch.repeat_interleave(torch.cos(angles), 2, dim=-1)
+            )
+
+            self.register_buffer(
+                "sin_theta", torch.repeat_interleave(torch.sin(angles), 2, dim=-1)
+            )
+
         self.heads = nn.ModuleList(
             [
                 AttentionHead(
                     head_size=head_size,
                     n_embed=n_embed,
-                    # key=self.keys[head // self.heads_per_group],
-                    # value=self.values[head // self.heads_per_group],
                     block_size=block_size,
                     dropout=dropout,
                     pos_encoding=pos_encoding,
@@ -139,7 +187,9 @@ class GroupedQueryAttention(nn.Module):
     def forward(self, x):
         precomputed_keys, precomputed_values = (
             [
-                apply_rotary_pos_emb(k(x)) if self.pos_encoding == "rope" else k(x)
+                rotate_vector(k(x), self.cos_theta, self.sin_theta)
+                if self.pos_encoding == "rope"
+                else k(x)
                 for k in self.keys
             ],
             [v(x) for v in self.values],
@@ -153,6 +203,8 @@ class GroupedQueryAttention(nn.Module):
                     x,
                     precomputed_keys[group_index],
                     precomputed_values[group_index],
+                    self.cos_theta if self.pos_encoding == "rope" else None,
+                    self.sin_theta if self.pos_encoding == "rope" else None,
                 )
             )
 
