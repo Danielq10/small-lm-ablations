@@ -230,10 +230,33 @@ class FeedForwardNetwork(nn.Module):
         return self.network(x)
 
 
+class SwiGLUFFN(nn.Module):
+    """SwiGLU Feed Forward Network"""
+
+    def __init__(self, n_embed, dropout=0.2):
+        super().__init__()
+        # 8/3 * n_embed to preserve parameter parity with a 4*n_embed standard MLP
+        hidden_dim = int(2 * (4 * n_embed) / 3)
+        # Optional: round to multiple of 64 or 256 for GPU tensor core efficiency
+        hidden_dim = 64 * ((hidden_dim + 63) // 64)
+
+        self.w1 = nn.Linear(n_embed, hidden_dim, bias=False)  # Gate
+        self.w3 = nn.Linear(n_embed, hidden_dim, bias=False)  # Up
+        self.w2 = nn.Linear(hidden_dim, n_embed, bias=False)  # Down
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # SwiGLU: (SiLU(W1 x) * W3 x) W2
+        silu = F.silu(self.w1(x)) * self.w3(x)
+        return self.dropout(self.w2(silu))
+
+
 class DecoderBlock(nn.Module):
     """Transformers decoder block"""
 
-    def __init__(self, n_embed, n_heads, block_size, dropout, pos_encoding, n_groups):
+    def __init__(
+        self, n_embed, n_heads, block_size, dropout, pos_encoding, n_groups, ffn
+    ):
         super().__init__()
         head_size = n_embed // n_heads
 
@@ -247,13 +270,20 @@ class DecoderBlock(nn.Module):
             pos_encoding=pos_encoding,
         )
 
-        self.mlp = FeedForwardNetwork(n_embed=n_embed, dropout=dropout)
+        if ffn == "mlp":
+            self.ffn = FeedForwardNetwork(n_embed=n_embed, dropout=dropout)
+        elif ffn == "swiglu":
+            self.ffn = SwiGLUFFN(n_embed=n_embed, dropout=dropout)
+        else:
+            raise ValueError(
+                f"Wrong ffn type: {ffn}, supported values are ['mlp', 'swiglu']"
+            )
         self.ln1 = nn.LayerNorm(n_embed)
         self.ln2 = nn.LayerNorm(n_embed)
 
     def forward(self, x):
         x = x + self.heads(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        x = x + self.ffn(self.ln2(x))
         return x
 
 
@@ -266,6 +296,7 @@ class LanguageModel(nn.Module):
         n_blocks=6,
         n_heads=8,
         n_groups=8,
+        ffn="mlp",
         dropout=0.2,
         pos_encoding="learned",
     ):
@@ -288,6 +319,7 @@ class LanguageModel(nn.Module):
                     dropout=dropout,
                     pos_encoding=pos_encoding,
                     n_groups=n_groups,
+                    ffn=ffn,
                 )
                 for n in range(n_blocks)
             ]
