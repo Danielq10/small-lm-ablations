@@ -278,8 +278,8 @@ class DecoderBlock(nn.Module):
             raise ValueError(
                 f"Wrong ffn type: {ffn}, supported values are ['mlp', 'swiglu']"
             )
-        self.ln1 = nn.LayerNorm(n_embed)
-        self.ln2 = nn.LayerNorm(n_embed)
+        self.ln1 = nn.RMSNorm(n_embed)
+        self.ln2 = nn.RMSNorm(n_embed)
 
     def forward(self, x):
         x = x + self.heads(self.ln1(x))
@@ -324,7 +324,7 @@ class LanguageModel(nn.Module):
                 for n in range(n_blocks)
             ]
         )
-        self.ln_f = nn.LayerNorm(n_embed)
+        self.ln_f = nn.RMSNorm(n_embed)
         self.lm_head = nn.Linear(n_embed, vocab_size)
 
     def forward(self, idx, targets=None):
