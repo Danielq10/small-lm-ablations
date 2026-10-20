@@ -19,15 +19,9 @@ class TrainingConfig(BaseModel):
     training_steps: int = 5000
 
 
-class EvaluationConfig(BaseModel):
-    eval_iters: int = 200
-    eval_interval: int = 500
-
-
 class Config(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     train: TrainingConfig = Field(default_factory=TrainingConfig)
-    eval: EvaluationConfig = Field(default_factory=EvaluationConfig)
     experiment: str = "arch-ablation"
     run_name: str = "char-tokenizer"
     description: str = "Training a small transformer LM with character tokenizer"

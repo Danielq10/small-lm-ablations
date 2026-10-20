@@ -30,6 +30,7 @@ class TrainingDisplay:
         training_tokens,
         validation_tokens,
         training_steps,
+        eval_iters,
     ):
         self.cfg = cfg
         self.vocab_size = vocab_size
@@ -39,6 +40,7 @@ class TrainingDisplay:
         self.training_tokens = training_tokens
         self.validation_tokens = validation_tokens
         self.training_steps = training_steps
+        self.eval_iters = eval_iters
         self.expected_training_time = plan["hours"]
         self.expected_loss = plan["loss"]
         self.console = Console()
@@ -201,7 +203,7 @@ class TrainingDisplay:
 
         self.eval_task = self.pbar.add_task(
             "[cyan]eval",
-            total=self.cfg.eval.eval_iters,
+            total=self.eval_iters,
             visible=False,
             loss="",
             val="",
@@ -240,7 +242,7 @@ class TrainingDisplay:
     def eval_start(self, split):
         self.pbar.reset(
             self.eval_task,
-            total=self.cfg.eval.eval_iters,
+            total=self.eval_iters,
             description=f"[cyan]Estimating {split}",
             visible=True,
         )
