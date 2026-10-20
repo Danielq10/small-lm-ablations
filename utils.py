@@ -1,11 +1,4 @@
-import os
-
-import numpy as np
 import torch
-
-from config import load_config
-from model import LanguageModel
-from tokenizer import BPETokenizer
 
 
 def count_model_params(model):
@@ -54,7 +47,7 @@ def approx_loss(N, D):
     return A / (N**alpha) + B / (D**beta) + E
 
 
-MFU = 0.25  # assumption: measure this (the training summary prints the measured value)
+MFU = 0.10  # assumption: measure this (the training summary prints the measured value)
 
 # Dense (no sparsity) peak TFLOPs per GPU, matched by substring of the device name.
 # "fp32" = CUDA cores, "tf32"/"half" = tensor cores (half = fp16/bf16).
@@ -74,14 +67,18 @@ def detect_gpu():
     """Detect the GPU and the matmul dtype in use, and look up its peak FLOPs.
 
     Training currently runs in plain fp32 (no autocast); matmuls only use tensor
-    cores in tf32 if torch's float32 matmul precision has been lowered.
+    cores in tf32 if torch's float32 matmul precision has been lowered AND the GPU
+    supports tf32 (Ampere / compute capability 8.0+, e.g. A100, L4). Older GPUs
+    such as the T4 (Turing, 7.5) silently ignore the setting and stay in fp32.
     Returns {"name", "dtype", "peak_flops"}; peak_flops is None if unknown or CPU.
     """
     if not torch.cuda.is_available():
         return {"name": "cpu", "dtype": "fp32", "peak_flops": None}
 
     name = torch.cuda.get_device_name()
-    dtype = "fp32" if torch.get_float32_matmul_precision() == "highest" else "tf32"
+    supports_tf32 = torch.cuda.get_device_capability() >= (8, 0)
+    tf32_enabled = torch.get_float32_matmul_precision() != "highest"
+    dtype = "tf32" if supports_tf32 and tf32_enabled else "fp32"
     peak = None
     for key, table in GPU_PEAK_TFLOPS:
         if key.lower() in name.lower():
@@ -120,81 +117,3 @@ def chinchilla_plan(n_params, n_tokens, peak_flops=None):
         # optimal model size for the data we actually have
         "optimal_params_for_data": n_tokens / 20,
     }
-
-
-def scaling_report(config_path):
-    config_path = os.path.join("configs", f"{config_path}.yaml")
-    cfg = load_config(config_path)
-
-    train_data = np.memmap("data/train.bin", dtype=np.uint16, mode="r")
-    valid_data = np.memmap("data/val.bin", dtype=np.uint16, mode="r")
-    tokenizer = BPETokenizer("data/polish_bpe_8k.json")
-
-    model = LanguageModel(
-        vocab_size=tokenizer.vocab_size,
-        n_embed=cfg.model.n_embed,
-        block_size=cfg.model.block_size,
-        n_blocks=cfg.model.n_blocks,
-        n_heads=cfg.model.n_heads,
-        dropout=cfg.model.dropout,
-        pos_encoding=cfg.model.pos_encoding,
-    )
-    params = count_model_params(model)
-    gpu = detect_gpu()
-    plan = chinchilla_plan(params["total"], len(train_data), gpu["peak_flops"])
-
-    print("CONFIGURED MODEL PARAMS")
-    print("-----------------")
-    print(f"Vocab size: {tokenizer.vocab_size}")
-    print(f"n_embed: {cfg.model.n_embed}")
-    print(f"block_size: {cfg.model.block_size}")
-    print(f"n_blocks: {cfg.model.n_blocks}")
-    print(f"n_heads: {cfg.model.n_heads}")
-    print(f"dropout: {cfg.model.dropout}")
-    print(f"pos_encoding: {cfg.model.pos_encoding}")
-    print("-----------------\n")
-
-    print("CONFIGURED MODEL SUMMARY")
-    print("-----------------")
-    print(f"Embedding parameters: {params['embedding'] / 1e6:.2f} M")
-    print(f"Non-embedding parameters: {params['non_embedding'] / 1e6:.2f} M")
-    print(f"Total parameters: {params['total'] / 1e6:.2f} M")
-    print(f"Token to parameters ratio: {plan['tokens_per_param']:.2f}")
-    print("-----------------\n")
-
-    calculated_training_steps = calculate_training_steps(
-        num_tokens=len(train_data),
-        batch_size=cfg.train.batch_size,
-        block_size=cfg.model.block_size,
-        epochs=1,
-    )
-
-    calculated_eval_interval = max(1, calculated_training_steps // 20)
-
-    print("CONFIGURED TRAINING CONFIGURATION")
-    print("-----------------")
-    print(f"Train tokens: {len(train_data) / 1e6:.2f} M")
-    print(f"Validation tokens: {len(valid_data) / 1e6:.2f} M")
-    print(f"Batch size: {cfg.train.batch_size}")
-    print(f"Training steps: {calculated_training_steps}")
-    print(f"Eval interval: {calculated_eval_interval}")
-    print(f"Expected loss: {plan['loss']:.2f}")
-    hours = "n/a" if plan["hours"] is None else f"{plan['hours']:.2f} hours"
-    print(f"GPU: {gpu['name']} ({gpu['dtype']})")
-    print(f"Expected Training time: {hours}")
-    print("-----------------\n")
-
-    print("OPTIMAL MODEL (same compute budget)")
-    print("-----------------")
-    print(f"Optimal parameters: {plan['optimal_params'] / 1e6:.2f} M")
-    print(f"Optimal tokens: {plan['optimal_tokens'] / 1e6:.2f} M")
-    print(f"Expected loss: {plan['optimal_loss']:.2f}")
-    print(
-        f"Optimal parameters for available data: "
-        f"{plan['optimal_params_for_data'] / 1e6:.2f} M"
-    )
-    print("-----------------\n")
-
-
-if __name__ == "__main__":
-    scaling_report("base")
