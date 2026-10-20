@@ -233,20 +233,9 @@ class FeedForwardNetwork(nn.Module):
 class DecoderBlock(nn.Module):
     """Transformers decoder block"""
 
-    def __init__(self, n_embed, n_heads, block_size, dropout, pos_encoding, attention):
+    def __init__(self, n_embed, n_heads, block_size, dropout, pos_encoding, n_groups):
         super().__init__()
         head_size = n_embed // n_heads
-
-        if attention == "mha":
-            n_groups = n_heads
-
-        elif attention == "gqa":
-            n_groups = n_heads // 2
-
-        else:
-            raise ValueError(
-                f"attention {attention} not supported, please choose one of ['mha', 'gqa']"
-            )
 
         self.heads = GroupedQueryAttention(
             num_heads=n_heads,
@@ -276,9 +265,9 @@ class LanguageModel(nn.Module):
         block_size=8,
         n_blocks=6,
         n_heads=8,
+        n_groups=8,
         dropout=0.2,
         pos_encoding="learned",
-        attention="mha",
     ):
         super().__init__()
 
@@ -298,7 +287,7 @@ class LanguageModel(nn.Module):
                     block_size=block_size,
                     dropout=dropout,
                     pos_encoding=pos_encoding,
-                    attention=attention,
+                    n_groups=n_groups,
                 )
                 for n in range(n_blocks)
             ]
