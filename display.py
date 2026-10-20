@@ -79,12 +79,22 @@ class TrainingDisplay:
             justify="center",
             no_wrap=True,
         )
+
+        if self.cfg.model.n_groups == self.cfg.model.n_heads:
+            attention = "MHA"
+        elif self.cfg.model.n_groups == 1:
+            attention = "MQA"
+        else:
+            attention = f"GQA-{self.cfg.model.n_groups}"
+
         model_rows = [
             ("Vocab size", self.vocab_size),
             ("n_embed", self.cfg.model.n_embed),
             ("block_size", self.cfg.model.block_size),
             ("n_blocks", f"{self.cfg.model.n_blocks}"),
             ("n_heads", f"{self.cfg.model.n_heads}"),
+            ("n_groups", f"{self.cfg.model.n_groups}"),
+            ("attention", attention),
             ("dropout", self.cfg.model.dropout),
             ("pos_encoding", self.cfg.model.pos_encoding),
             ("Embedding params", f"{self.params['embedding'] / 1e6:.2f} M"),
