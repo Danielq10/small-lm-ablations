@@ -95,6 +95,7 @@ class TrainingDisplay:
             ("n_heads", f"{self.cfg.model.n_heads}"),
             ("n_groups", f"{self.cfg.model.n_groups}"),
             ("attention", attention),
+            ("ffn", self.cfg.model.ffn),
             ("dropout", self.cfg.model.dropout),
             ("pos_encoding", self.cfg.model.pos_encoding),
             ("Embedding params", f"{self.params['embedding'] / 1e6:.2f} M"),

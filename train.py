@@ -166,6 +166,7 @@ if __name__ == "__main__":
         n_blocks=cfg.model.n_blocks,
         n_heads=cfg.model.n_heads,
         n_groups=cfg.model.n_groups,
+        ffn=cfg.model.ffn,
         dropout=cfg.model.dropout,
         pos_encoding=cfg.model.pos_encoding,
     )
