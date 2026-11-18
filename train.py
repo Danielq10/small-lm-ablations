@@ -14,6 +14,7 @@ from dataloaderlite import DataLoaderLite
 from display import TrainingDisplay
 from model import LanguageModel
 from tokenizer import BPETokenizer  # , WordTokenizer
+from tracing import generate_model_traces
 from utils import (
     calculate_training_steps,
     chinchilla_plan,
@@ -341,19 +342,29 @@ if __name__ == "__main__":
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
                 "config": cfg.model_dump(),
-                "step": cfg.train.training_steps,
+                "step": calculated_training_steps,
                 "vocab_size": tokenizer.vocab_size,
             },
             ckpt_path,
         )
 
-        # Create predictions
-        model.eval()
-        idx = torch.zeros((1, 1), dtype=torch.long, device=device)
-        predicted_tokens = model.generate(idx, max_new_tokens=600)[0].tolist()
-        display.print_generation(tokenizer.decode(predicted_tokens))
-
         # 2. also track in MLflow - cloudpickle avoids pt2 tracing
         # (forward returns a tuple, generate() samples - bad fit for tracing)
-        mlflow.pytorch.log_model(model, name="model", serialization_format="pickle")
+        model.eval()
+        model_info = mlflow.pytorch.log_model(
+            model, name="model", serialization_format="pickle"
+        )
         mlflow.log_artifact(ckpt_path)
+
+        # 3. Generate MLflow traces linked to both this run and the logged model
+        samples = generate_model_traces(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            model_name=cfg.run_name,
+            model_id=model_info.model_id,
+        )
+        if samples:
+            display.print_generation(
+                samples[0]["full_text"] or samples[0]["completion"]
+            )
