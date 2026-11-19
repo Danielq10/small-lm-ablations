@@ -191,15 +191,13 @@ class TrainingDisplay:
         self.console.print()
         self.console.print(grid)
 
-    def start_training(self, start_step=0, best_val=float("inf")):
-        self.start_step = start_step
+    def start_training(self):
         self.pbar.start()
         self.training_task = self.pbar.add_task(
             description="[green]Training",
             total=self.training_steps,
-            completed=start_step,
             loss="-",
-            val=f"{best_val:.3f}" if best_val < float("inf") else "-",
+            val="-",
             tps="-",
         )
 
@@ -213,7 +211,7 @@ class TrainingDisplay:
         )
 
         self.tokens_per_step = self.cfg.train.batch_size * self.cfg.model.block_size
-        self.best_val = best_val
+        self.best_val = float("inf")
         self.ema = None
         self.t_last = time.perf_counter()
         self.t_start = self.t_last
@@ -276,12 +274,9 @@ class TrainingDisplay:
 
         self.best_val = min(self.best_val, final_validation_loss)
         tokens_seen = self.tokens_per_step * self.training_steps
-        session_tokens = self.tokens_per_step * max(
-            1, self.training_steps - getattr(self, "start_step", 0)
-        )
         peak = self.gpu["peak_flops"]
         measured_mfu = (
-            f"{6 * self.params['total'] * session_tokens / elapsed / peak:.1%}"
+            f"{6 * self.params['total'] * tokens_seen / elapsed / peak:.1%}"
             if peak
             else "n/a"
         )
@@ -314,7 +309,7 @@ class TrainingDisplay:
                 [
                     ("Total time", f"{elapsed / 60:.1f} min"),
                     ("Tokens seen", f"{tokens_seen / 1e6:.1f} M"),
-                    ("Avg throughput", f"{session_tokens / elapsed / 1e3:.1f}k tok/s"),
+                    ("Avg throughput", f"{tokens_seen / elapsed / 1e3:.1f}k tok/s"),
                     ("Measured MFU", measured_mfu),
                 ],
             ),

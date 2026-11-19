@@ -86,7 +86,7 @@ def estimate_loss(model, train_data, valid_data, split, iters, config, display):
 
     display.eval_end()
     model.train()
-    return losses.mean()
+    return losses.mean().item()
 
 
 @torch.no_grad()
@@ -101,17 +101,49 @@ def evaluate_full_validation(model, val_loader, device):
         _, loss = model(X, Y)
         losses.append(loss.item())
 
+    model.train()
     return sum(losses) / len(losses) if losses else 0.0
+
+
+def setup_mlflow_experiment(tracking_uri: str, experiment_name: str) -> str:
+    """Configure MLflow tracking URI and guard against local/proxied artifact mismatches."""
+    mlflow.set_tracking_uri(tracking_uri)
+    exp = mlflow.get_experiment_by_name(experiment_name)
+    if exp is None:
+        if tracking_uri.startswith("sqlite"):
+            exp_id = mlflow.create_experiment(
+                experiment_name, artifact_location="runs/artifacts"
+            )
+        else:
+            exp_id = mlflow.create_experiment(experiment_name)
+        exp = mlflow.get_experiment(exp_id)
+
+    if tracking_uri.startswith(
+        ("http://", "https://")
+    ) and not exp.artifact_location.startswith("mlflow-artifacts:"):
+        raise RuntimeError(
+            f"Experiment '{experiment_name}' has local artifact_location "
+            f"'{exp.artifact_location}', so remote runs via '{tracking_uri}' "
+            "would NOT upload artifacts to your MLflow server. Use an experiment "
+            "created through `mlflow server` (with `mlflow-artifacts:/`)."
+        )
+    if tracking_uri.startswith("sqlite") and exp.artifact_location.startswith(
+        "mlflow-artifacts:"
+    ):
+        raise RuntimeError(
+            f"Experiment '{experiment_name}' uses proxied '{exp.artifact_location}', "
+            "which requires an HTTP tracking URI. Start `mlflow server` and set "
+            "MLFLOW_TRACKING_URI=http://127.0.0.1:5000."
+        )
+
+    mlflow.set_experiment(experiment_name)
+    return exp.experiment_id
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a language model")
-    parser.add_argument("--config", type=str, help="Config name without .yaml")
     parser.add_argument(
-        "--resume",
-        type=str,
-        help="Path to checkpoint  .pt to resume training from",
-        default=None,
+        "--config", type=str, required=True, help="Config name without .yaml"
     )
     parser.add_argument(
         "--test",
@@ -173,22 +205,6 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.learning_rate)
 
-    # Check if we are resuming from checkpoint
-    if args.resume:
-        print(f"Resuming training from checkpoint: {args.resume} ...")
-
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-
-        # 1. Restore weights
-        model.load_state_dict(ckpt["model_state"])
-
-        # 2. Restore optimizer momentum buffers
-        optimizer.load_state_dict(ckpt["optimizer_state"])
-
-        # Retrieve iteration count
-        start_step = ckpt.get("step", 0)
-        print(f"Resumed from step {start_step}")
-
     params = count_model_params(model)
     gpu = detect_gpu()
     plan = chinchilla_plan(params["total"], len(train_data), gpu["peak_flops"])
@@ -227,14 +243,7 @@ if __name__ == "__main__":
     display.print_header()
 
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///runs/mlflow.db")
-    mlflow.set_tracking_uri(tracking_uri)
-
-    if mlflow.get_experiment_by_name(cfg.experiment) is None:
-        if tracking_uri.startswith("sqlite"):
-            mlflow.create_experiment(cfg.experiment, artifact_location="runs/artifacts")
-        else:
-            mlflow.create_experiment(cfg.experiment)
-    mlflow.set_experiment(cfg.experiment)
+    setup_mlflow_experiment(tracking_uri, cfg.experiment)
 
     # Enable system metrics logging
     mlflow.enable_system_metrics_logging()
@@ -266,6 +275,8 @@ if __name__ == "__main__":
         lr = get_lr(0, cfg.train.learning_rate, calculated_training_steps)
 
         for iter in range(calculated_training_steps):
+            lr = get_lr(iter, cfg.train.learning_rate, calculated_training_steps)
+
             if iter % calculated_eval_interval == 0:
                 train_loss = estimate_loss(
                     model,
@@ -305,7 +316,6 @@ if __name__ == "__main__":
             # clip_grad_norm_ returns the norm *before* clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-            lr = get_lr(iter, cfg.train.learning_rate, calculated_training_steps)
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
 
@@ -313,7 +323,6 @@ if __name__ == "__main__":
 
             display.log_step(loss=loss.item())
 
-        # final_losses = estimate_loss(train_data, valid_data, cfg, display)
         train_loss = estimate_loss(
             model, train_data, valid_data, "train", calculated_eval_iters, cfg, display
         )
@@ -321,13 +330,13 @@ if __name__ == "__main__":
             model=model, val_loader=valid_loader, device=device
         )
         mlflow.log_metrics(
-            {"train_loss": train_loss, "final_val_loss": full_valid_loss},
+            {"train_loss": train_loss, "final_val_loss": full_valid_loss, "lr": lr},
             step=calculated_training_steps,
         )
 
         display.finish_training()
 
-        # 1. local checkpoint
+        # 1. local checkpoint (weights + config only; optimizer state omitted)
         os.makedirs("runs/checkpoints", exist_ok=True)
         ckpt_path = f"runs/checkpoints/{cfg.run_name}.pt"
 
@@ -340,7 +349,6 @@ if __name__ == "__main__":
         torch.save(
             {
                 "model_state": model.state_dict(),
-                "optimizer_state": optimizer.state_dict(),
                 "config": cfg.model_dump(),
                 "step": calculated_training_steps,
                 "vocab_size": tokenizer.vocab_size,
@@ -365,6 +373,4 @@ if __name__ == "__main__":
             model_id=model_info.model_id,
         )
         if samples:
-            display.print_generation(
-                samples[0]["full_text"] or samples[0]["completion"]
-            )
+            display.print_generation(samples[0]["completion"])
