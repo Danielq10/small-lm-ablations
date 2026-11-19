@@ -1,0 +1,18 @@
+experiment: arch-ablation-final
+run_name: modern
+description: "Phase 2 modern stack: RoPE + Grouped-Query Attention (2 KV groups) + SwiGLU"
+seed: 1337
+
+model:
+  n_embed: 512
+  n_blocks: 6
+  n_heads: 8
+  n_groups: 2
+  ffn: "swiglu"
+  dropout: 0.0
+  block_size: 256
+  pos_encoding: "rope"
+
+train:
+  batch_size: 128
+  learning_rate: 6e-4

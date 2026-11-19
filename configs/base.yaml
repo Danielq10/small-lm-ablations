@@ -1,6 +1,6 @@
-experiment: arch-ablation
+experiment: arch-ablation-final
 run_name: baseline
-description: "Baseline model with MLP, llearned position embeddings and Multi Head Attention"
+description: "Baseline model with MLP, learned position embeddings, and Multi-Head Attention"
 seed: 1337
 
 model:
@@ -16,5 +16,3 @@ model:
 train:
   batch_size: 128
   learning_rate: 6e-4
-
-

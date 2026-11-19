@@ -1,21 +1,18 @@
-experiment: arch-ablation
+experiment: arch-ablation-final
 run_name: rope
-description: "Baseline model with RoPE"
+description: "Phase 1 single-swap: RoPE positional encoding + MLP + MHA"
 seed: 1337
 
 model:
   n_embed: 512
   n_blocks: 6
   n_heads: 8
-  dropout: 0.2
+  n_groups: 8
+  ffn: "mlp"
+  dropout: 0.0
   block_size: 256
   pos_encoding: "rope"
 
 train:
-  batch_size: 32
-  learning_rate: 3e-4
-  training_steps: 5000
-
-eval:
-  eval_iters: 200
-  eval_interval: 500
+  batch_size: 128
+  learning_rate: 6e-4

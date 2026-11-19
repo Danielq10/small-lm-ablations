@@ -1,20 +1,18 @@
-experiment: arch-ablation
+experiment: smoke-tests
 run_name: test-training
 description: "Minimal configuration to test training loop"
 seed: 1337
 
 model:
-  n_embed: 256
+  n_embed: 32
   n_blocks: 2
   n_heads: 2
+  n_groups: 1
+  ffn: "swiglu"
   dropout: 0.2
-  block_size: 128
+  block_size: 32
+  pos_encoding: "rope"
 
 train:
   batch_size: 128
   learning_rate: 3e-4
-  training_steps: 1000
-
-eval:
-  eval_iters: 100
-  eval_interval: 250
