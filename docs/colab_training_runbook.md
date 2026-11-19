@@ -92,6 +92,9 @@ curl -s "${MLFLOW_TRACKING_URI}/health"
 
 *Expected output: `OK`*
 
+> [!IMPORTANT]
+> **Artifact Proxying Requirement**: Make sure the target experiment (e.g. `arch-ablation-final` or `smoke-tests`) is created through your running `mlflow server` so its `artifact_location` is `mlflow-artifacts:/...`. `train.py` enforces this at startup and fails fast if an HTTP run targets a legacy local-path experiment (or if a local `sqlite:///` run targets a proxied experiment — when running locally against `arch-ablation-final` or `smoke-tests`, set `MLFLOW_TRACKING_URI=http://127.0.0.1:5000`).
+
 ---
 
 ## Step 6: Clone Repository & Install Dependencies (On Colab)
@@ -99,8 +102,7 @@ curl -s "${MLFLOW_TRACKING_URI}/health"
 Clone your repository and navigate to the project directory:
 
 ```bash
-git clone https://github.com/Danielq10/small-lm-ablations.git
-cd small-lm-ablations
+git clone https://github.com/Danielq10/small-lm-ablations.git && cd small-lm-ablations
 ```
 
 ## Step 7: Loogout from the session and upload training data
@@ -122,13 +124,19 @@ uv sync
 
 ## Step 10: Run Model Training (On Colab)
 
-Launch the training loop with your desired configuration:
+First run a quick smoke check to confirm metrics, LLM traces, and `.pt` artifacts arrive locally in `runs/artifacts/`:
 
 ```bash
-python train.py --config chinchilla_t4
+uv run python train.py --config base_tiny --test
 ```
 
-*(Or use `--config base` / `--config base_tiny`).*
+Then launch the full ablation runs:
+
+```bash
+uv run python train.py --config base
+```
+
+*(Available ablation configs: `base`, `rope`, `gqa`, `swiglu`, `rope_gqa`, `modern`, `rope_swiglu`; smoke configs: `base_tiny`, `test_config`.)*
 
 ### Monitoring & Session Controls
 
