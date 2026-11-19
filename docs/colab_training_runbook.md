@@ -49,11 +49,14 @@ Keep this terminal tab open, or run it inside a local `tmux` session. Verify it 
 
 ## Step 3: Start Colab Session
 
-Start your Google Colab instance (with GPU enabled):
+Start your Google Colab instance with an **L4** (or **A100**) GPU:
 
-  ```bash
-  colab start -s trainer --gpu T4
-  ```
+```bash
+colab start -s trainer --gpu L4
+```
+
+> [!WARNING]
+> Do not use `--gpu T4` for the 27M ablation configs (`batch_size: 128`). Baseline peaks at ~14.8 GB VRAM and SwiGLU/RoPE variants allocate more activation memory (likely OOM on T4's 15 GB), and T4 lacks TF32 tensor cores.
 
 ---
 
@@ -97,23 +100,32 @@ curl -s "${MLFLOW_TRACKING_URI}/health"
 
 ---
 
-## Step 6: Clone Repository & Install Dependencies (On Colab)
+## Step 6: Clone Repository (On Colab)
 
-Clone your repository and navigate to the project directory:
+Make sure your latest local commits are pushed to `origin/main` first, then clone the repository and navigate into it:
 
 ```bash
 git clone https://github.com/Danielq10/small-lm-ablations.git && cd small-lm-ablations
 ```
 
-## Step 7: Loogout from the session and upload training data
+## Step 7: Detach / Log Out and Upload Training Data (Local Machine)
+
+Detach from `tmux` (`Ctrl + b`, then `d`) or open a second local terminal, then upload the pretokenized binary datasets from your workstation:
 
 ```bash
 scp -o 'ProxyCommand=colab ssh --proxy-mode -s trainer' -i ~/.ssh/id_ed25519 data/train.bin data/val.bin data/polish_bpe_8k.json root@colab:/content/small-lm-ablations/data/
 ```
 
-## Step 8: SSH to the session again
+## Step 8: SSH Back In & Reattach `tmux`
 
-## Step 9:Install the required Python packages on Colab
+Reattach to your `train` session so `MLFLOW_TRACKING_URI` and your working directory are preserved:
+
+```bash
+colab ssh -s trainer
+tmux attach -t train
+```
+
+## Step 9: Install the Required Python Packages (On Colab)
 
 ```bash
 uv sync

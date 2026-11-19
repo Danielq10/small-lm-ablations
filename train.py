@@ -2,6 +2,7 @@ import argparse
 import logging
 import math
 import os
+import time
 import warnings
 
 import mlflow
@@ -32,11 +33,15 @@ warnings.filterwarnings("ignore", module="mlflow")
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-def get_batch(split, train_data, valid_data, config):
+def get_batch(split, train_data, valid_data, config, generator=None):
     # generate a small batch of data of inputs x and targets y
 
     data = train_data if split == "train" else valid_data
-    ix = torch.randint(len(data) - config.model.block_size, (config.train.batch_size,))
+    ix = torch.randint(
+        len(data) - config.model.block_size,
+        (config.train.batch_size,),
+        generator=generator,
+    )
     x = torch.stack(
         [
             torch.from_numpy((data[i : i + config.model.block_size]).astype(np.int64))
@@ -75,11 +80,16 @@ def get_lr(step, max_lr, total_steps):
 def estimate_loss(model, train_data, valid_data, split, iters, config, display):
     model.eval()
 
+    # Use a fixed local RNG so every eval call and every ablation variant
+    # evaluates on the exact same batches regardless of model init RNG draws.
+    eval_seed = config.seed if split == "train" else config.seed + 1
+    eval_gen = torch.Generator().manual_seed(eval_seed)
+
     losses = torch.zeros(iters)
 
     display.eval_start(f"{split} loss")
     for k in range(iters):
-        X, Y = get_batch(split, train_data, valid_data, config)
+        X, Y = get_batch(split, train_data, valid_data, config, generator=eval_gen)
         _, loss = model(X, Y)
         losses[k] = loss.item()
         display.eval_tick()
@@ -93,7 +103,7 @@ def estimate_loss(model, train_data, valid_data, split, iters, config, display):
 def evaluate_full_validation(model, val_loader, device):
     model.eval()
     val_loader.current_position = 0
-    total_batches = len(val_loader.data) // val_loader.tokens_per_batch
+    total_batches = max(0, (len(val_loader.data) - 1) // val_loader.tokens_per_batch)
 
     losses = []
     for _ in range(total_batches):
@@ -259,6 +269,8 @@ if __name__ == "__main__":
                 "embedding_params": params["embedding"],
                 "non_embedding_params": params["non_embedding"],
                 "head_params": params["head"],
+                "train_tokens": len(train_data),
+                "val_tokens": len(valid_data),
                 "calculated_training_steps": calculated_training_steps,
                 "calculated_eval_interval": calculated_eval_interval,
                 "calculated_eval_iterations": calculated_eval_iters,
@@ -267,10 +279,16 @@ if __name__ == "__main__":
                 "gpu_name": gpu["name"],
                 "gpu_dtype": gpu["dtype"],
                 "seed": cfg.seed,
+                "config_name": args.config,
+                "is_test_run": args.test,
             }
         )
 
         display.start_training()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t_train_start = time.perf_counter()
+        best_val_loss = float("inf")
 
         lr = get_lr(0, cfg.train.learning_rate, calculated_training_steps)
 
@@ -296,6 +314,7 @@ if __name__ == "__main__":
                     cfg,
                     display,
                 )
+                best_val_loss = min(best_val_loss, val_loss)
 
                 display.log_eval(step=iter, train_loss=train_loss, val_loss=val_loss)
                 mlflow.log_metrics(
@@ -329,10 +348,28 @@ if __name__ == "__main__":
         full_valid_loss = evaluate_full_validation(
             model=model, val_loader=valid_loader, device=device
         )
-        mlflow.log_metrics(
-            {"train_loss": train_loss, "final_val_loss": full_valid_loss, "lr": lr},
-            step=calculated_training_steps,
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        train_elapsed = time.perf_counter() - t_train_start
+        best_val_loss = min(best_val_loss, full_valid_loss)
+        tokens_seen = (
+            cfg.train.batch_size * cfg.model.block_size * calculated_training_steps
         )
+
+        final_metrics = {
+            "train_loss": train_loss,
+            "final_val_loss": full_valid_loss,
+            "final_val_perplexity": math.exp(full_valid_loss),
+            "best_val_loss": best_val_loss,
+            "lr": lr,
+            "training_time_sec": train_elapsed,
+            "avg_tokens_per_sec": tokens_seen / train_elapsed,
+        }
+        if gpu["peak_flops"]:
+            final_metrics["measured_mfu"] = (
+                6 * params["total"] * tokens_seen / train_elapsed / gpu["peak_flops"]
+            )
+        mlflow.log_metrics(final_metrics, step=calculated_training_steps)
 
         display.finish_training()
 
