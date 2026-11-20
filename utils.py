@@ -117,3 +117,10 @@ def chinchilla_plan(n_params, n_tokens, peak_flops=None):
         # optimal model size for the data we actually have
         "optimal_params_for_data": n_tokens / 20,
     }
+
+
+def flops_per_token(params, n_blocks, block_size, n_embed):
+    return (
+        6 * (params["total"] - params["embedding"])
+        + 12 * n_blocks * block_size * n_embed
+    )

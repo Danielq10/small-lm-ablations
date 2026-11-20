@@ -10,7 +10,7 @@ import mlflow.pytorch
 import numpy as np
 import torch
 
-from config import load_config
+from config import TrainingConfig, load_config
 from dataloaderlite import DataLoaderLite
 from display import TrainingDisplay
 from model import LanguageModel
@@ -21,6 +21,7 @@ from utils import (
     chinchilla_plan,
     count_model_params,
     detect_gpu,
+    flops_per_token,
 )
 
 torch.set_float32_matmul_precision("high")
@@ -62,9 +63,11 @@ def get_batch(split, train_data, valid_data, config, generator=None):
     return x, y
 
 
-def get_lr(step, max_lr, total_steps):
-    warmup_steps = max(1, int(0.05 * total_steps))
-    min_lr = 0.1 * max_lr
+def get_lr(
+    step: int, max_lr: float, total_steps: int, warmup_frac: float, min_lr_ratio: float
+) -> float:
+    warmup_steps = max(1, int(warmup_frac * total_steps))
+    min_lr = min_lr_ratio * max_lr
     # 1) Linear warmup
     if step < warmup_steps:
         return max_lr * (step + 1) / warmup_steps
@@ -74,6 +77,26 @@ def get_lr(step, max_lr, total_steps):
     decay_ratio = (step - warmup_steps) / max(1, total_steps - warmup_steps)
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (max_lr - min_lr)
+
+
+def configure_optimizer(
+    model: LanguageModel, train_cfg: TrainingConfig
+) -> tuple[torch.optim.Optimizer, int, int]:
+    decay_params = [p for p in model.parameters() if p.dim() >= 2]
+    nodecay_params = [p for p in model.parameters() if p.dim() < 2]
+
+    num_decay_params = sum(p.numel() for p in decay_params)
+    num_nodecay_params = sum(p.numel() for p in nodecay_params)
+
+    optimizer = torch.optim.AdamW(
+        params=[
+            {"params": decay_params, "weight_decay": train_cfg.weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
+        ],
+        lr=train_cfg.learning_rate,
+        betas=(train_cfg.beta1, train_cfg.beta2),
+    )
+    return optimizer, num_decay_params, num_nodecay_params
 
 
 @torch.no_grad()
@@ -209,11 +232,16 @@ if __name__ == "__main__":
         dropout=cfg.model.dropout,
         pos_encoding=cfg.model.pos_encoding,
     )
-    model = model.to(device)
+    raw_model = model.to(device)
+
+    # compile the model to be faster
+    model = torch.compile(model)
 
     # Initialize optimizer and start training loop
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.learning_rate)
+    optimizer, num_decay_params, num_nodecay_params = configure_optimizer(
+        model=model, train_cfg=cfg.train
+    )
 
     params = count_model_params(model)
     gpu = detect_gpu()
@@ -281,6 +309,8 @@ if __name__ == "__main__":
                 "seed": cfg.seed,
                 "config_name": args.config,
                 "is_test_run": args.test,
+                "num_decay_params": num_decay_params,
+                "num_nodecay_params": num_nodecay_params,
             }
         )
 
@@ -290,10 +320,18 @@ if __name__ == "__main__":
         t_train_start = time.perf_counter()
         best_val_loss = float("inf")
 
-        lr = get_lr(0, cfg.train.learning_rate, calculated_training_steps)
+        training_window_loss_sum = 0
+        train_time = 0
+        compile_time = 0
 
         for iter in range(calculated_training_steps):
-            lr = get_lr(iter, cfg.train.learning_rate, calculated_training_steps)
+            lr = get_lr(
+                step=iter,
+                max_lr=cfg.train.learning_rate,
+                total_steps=calculated_training_steps,
+                warmup_frac=cfg.train.warmup_frac,
+                min_lr_ratio=cfg.train.min_lr_ratio,
+            )
 
             if iter % calculated_eval_interval == 0:
                 train_loss = estimate_loss(
@@ -318,9 +356,11 @@ if __name__ == "__main__":
 
                 display.log_eval(step=iter, train_loss=train_loss, val_loss=val_loss)
                 mlflow.log_metrics(
-                    {"train_loss": train_loss, "val_loss": val_loss, "lr": lr},
+                    {"train_loss": train_loss, "val_loss": val_loss},
                     step=iter,
                 )
+
+            t0 = time.perf_counter()
 
             # sample a batch of data
             xb, yb = train_loader.next_batch(device=device)
@@ -333,14 +373,38 @@ if __name__ == "__main__":
             # Rescale gradients so their global L2 norm is at most 1.0 (guards
             # against loss spikes from occasional huge gradients)
             # clip_grad_norm_ returns the norm *before* clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                parameters=model.parameters(), max_norm=cfg.train.grad_clip
+            )
 
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
 
             optimizer.step()
 
-            display.log_step(loss=loss.item())
+            loss_val = loss.item()
+
+            if iter == 0:
+                compile_time = time.perf_counter() - t0
+            else:
+                train_time += time.perf_counter() - t0
+
+            display.log_step(loss=loss_val)
+
+            training_window_loss_sum += loss_val
+
+            if (iter + 1) % cfg.train.log_interval == 0:
+                mlflow.log_metrics(
+                    {
+                        "train_loss_step": training_window_loss_sum
+                        / cfg.train.log_interval,
+                        "lr": lr,
+                        "grad_norm": grad_norm.item(),
+                    },
+                    step=iter,
+                    synchronous=False,
+                )
+                training_window_loss_sum = 0
 
         train_loss = estimate_loss(
             model, train_data, valid_data, "train", calculated_eval_iters, cfg, display
@@ -356,19 +420,38 @@ if __name__ == "__main__":
             cfg.train.batch_size * cfg.model.block_size * calculated_training_steps
         )
 
+        tokens_per_step = cfg.train.batch_size * cfg.model.block_size
+        train_tokens_per_sec = (
+            tokens_per_step * (calculated_training_steps - 1) / train_time
+        )
+
         final_metrics = {
             "train_loss": train_loss,
             "final_val_loss": full_valid_loss,
             "final_val_perplexity": math.exp(full_valid_loss),
             "best_val_loss": best_val_loss,
             "lr": lr,
-            "training_time_sec": train_elapsed,
-            "avg_tokens_per_sec": tokens_seen / train_elapsed,
+            "total_time_sec": train_elapsed,
+            "training_time_sec": train_time,
+            "compile_time_sec": compile_time,
+            "avg_tokens_per_sec": train_tokens_per_sec,
         }
+
         if gpu["peak_flops"]:
-            final_metrics["measured_mfu"] = (
-                6 * params["total"] * tokens_seen / train_elapsed / gpu["peak_flops"]
+            mfu = (
+                flops_per_token(
+                    params=params,
+                    n_embed=cfg.model.n_embed,
+                    block_size=cfg.model.block_size,
+                    n_blocks=cfg.model.n_blocks,
+                )
+                * train_tokens_per_sec
+                / gpu["peak_flops"]
             )
+            final_metrics["measured_mfu"] = mfu
+        else:
+            mfu = None
+
         mlflow.log_metrics(final_metrics, step=calculated_training_steps)
 
         display.finish_training()
@@ -378,14 +461,17 @@ if __name__ == "__main__":
         ckpt_path = f"runs/checkpoints/{cfg.run_name}.pt"
 
         display.print_summary(
+            train_elapsed=train_elapsed,
+            mfu=mfu,
             final_train_loss=train_loss,
             final_validation_loss=full_valid_loss,
             ckpt_path=ckpt_path,
+            train_tokens_per_sec=train_tokens_per_sec,
         )
 
         torch.save(
             {
-                "model_state": model.state_dict(),
+                "model_state": raw_model.state_dict(),
                 "config": cfg.model_dump(),
                 "step": calculated_training_steps,
                 "vocab_size": tokenizer.vocab_size,
@@ -397,13 +483,13 @@ if __name__ == "__main__":
         # (forward returns a tuple, generate() samples - bad fit for tracing)
         model.eval()
         model_info = mlflow.pytorch.log_model(
-            model, name="model", serialization_format="pickle"
+            raw_model, name="model", serialization_format="pickle"
         )
         mlflow.log_artifact(ckpt_path)
 
         # 3. Generate MLflow traces linked to both this run and the logged model
         samples = generate_model_traces(
-            model=model,
+            model=raw_model,
             tokenizer=tokenizer,
             device=device,
             model_name=cfg.run_name,

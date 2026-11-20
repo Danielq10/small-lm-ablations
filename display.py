@@ -269,17 +269,18 @@ class TrainingDisplay:
         self.pbar.stop()
         self.console.print()
 
-    def print_summary(self, final_train_loss, final_validation_loss, ckpt_path):
-        elapsed = time.perf_counter() - self.t_start
-
+    def print_summary(
+        self,
+        train_elapsed,
+        mfu,
+        final_train_loss,
+        final_validation_loss,
+        ckpt_path,
+        train_tokens_per_sec,
+    ):
         self.best_val = min(self.best_val, final_validation_loss)
         tokens_seen = self.tokens_per_step * self.training_steps
-        peak = self.gpu["peak_flops"]
-        measured_mfu = (
-            f"{6 * self.params['total'] * tokens_seen / elapsed / peak:.1%}"
-            if peak
-            else "n/a"
-        )
+
         delta = final_validation_loss - self.expected_loss
         delta_color = "green" if delta <= 0 else "yellow"
         gap = final_validation_loss - final_train_loss
@@ -307,10 +308,13 @@ class TrainingDisplay:
                 "magenta",
                 "white",
                 [
-                    ("Total time", f"{elapsed / 60:.1f} min"),
+                    ("Total time", f"{train_elapsed / 60:.1f} min"),
                     ("Tokens seen", f"{tokens_seen / 1e6:.1f} M"),
-                    ("Avg throughput", f"{tokens_seen / elapsed / 1e3:.1f}k tok/s"),
-                    ("Measured MFU", measured_mfu),
+                    (
+                        "Avg throughput",
+                        f"{train_tokens_per_sec / 1e3:.1f}k tok/s",
+                    ),
+                    ("Measured MFU", f"{mfu:.1%}" if mfu is not None else "n/a"),
                 ],
             ),
             ("yellow", "#f5dfbb", [("Checkpoint", ckpt_path)]),

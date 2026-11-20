@@ -44,6 +44,13 @@ class TrainingConfig(BaseModel):
 
     batch_size: int = 64
     learning_rate: float = 3e-4
+    beta1: float = 0.9
+    beta2: float = 0.95
+    weight_decay: float = 0.1
+    warmup_frac: float = 0.05  # % of training steps for warmup
+    min_lr_ratio: float = 0.1  # learning_rate/10 per Chinchilla
+    grad_clip: float = 1.0  # clip gradients at this value
+    log_interval: int = 50  # training loss logging interval
 
 
 class Config(BaseModel):
