@@ -233,10 +233,10 @@ class SwiGLUFFN(nn.Module):
 
     def __init__(self, n_embed, dropout=0.2):
         super().__init__()
-        # 8/3 * n_embed to preserve parameter parity with a 4*n_embed standard MLP
-        hidden_dim = int(2 * (4 * n_embed) / 3)
-        # Optional: round to multiple of 64 or 256 for GPU tensor core efficiency
-        hidden_dim = 64 * ((hidden_dim + 63) // 64)
+        # 8/3 * n_embed to preserve parameter parity with a 4*n_embed standard MLP,
+        # rounded to the nearest multiple of 64 for GPU tensor core efficiency.
+        raw_hidden_dim = 2 * (4 * n_embed) / 3
+        hidden_dim = max(64, 64 * round(raw_hidden_dim / 64))
 
         self.w1 = nn.Linear(n_embed, hidden_dim, bias=False)  # Gate
         self.w3 = nn.Linear(n_embed, hidden_dim, bias=False)  # Up
