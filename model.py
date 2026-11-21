@@ -218,9 +218,9 @@ class FeedForwardNetwork(nn.Module):
     def __init__(self, n_embed, dropout=0.2):
         super().__init__()
         self.network = nn.Sequential(
-            nn.Linear(n_embed, 4 * n_embed),
+            nn.Linear(n_embed, 4 * n_embed, bias=False),
             nn.GELU(),
-            nn.Linear(4 * n_embed, n_embed),
+            nn.Linear(4 * n_embed, n_embed, bias=False),
             nn.Dropout(dropout),
         )
 
