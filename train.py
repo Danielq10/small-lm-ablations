@@ -95,6 +95,7 @@ def configure_optimizer(
         ],
         lr=train_cfg.learning_rate,
         betas=(train_cfg.beta1, train_cfg.beta2),
+        fused=(device.type == "cuda"),
     )
     return optimizer, num_decay_params, num_nodecay_params
 
